@@ -8,6 +8,9 @@
 
 /* Standard C includes */
 #include <stdlib.h>
+#include <pthread.h>
+
+
 
 /* Include common headers */
 #include "common/macros.h"
@@ -19,6 +22,9 @@
 #include <math.h>
 
 #define inv_sqrt_2xPI 0.39894228040143270286
+#define NUM_THREADS 4
+
+
 
 float CNDFPara(float InputX) {
     int sign;
@@ -50,14 +56,16 @@ float CNDFPara(float InputX) {
     }
     return xLocal;
 }
+
+
 float blackScholesPara(float sptprice, float strike, float rate, float volatility, float time, int otype, float timet) {
     float xSqrtTime = sqrt(time);
     float logValues = log(sptprice / strike);
     float xD1 = (rate + 0.5 * volatility * volatility) * time + logValues;
     xD1 = xD1 / (volatility * xSqrtTime);
     float xD2 = xD1 - volatility * xSqrtTime;
-    float NofXd1 = CNDFPara(xD1);
-    float NofXd2 = CNDFPara(xD2);
+    float NofXd1 = CNDFPara(xD1);  // Use the parallel version of CNDF
+    float NofXd2 = CNDFPara(xD2);  // Use the parallel version of CNDF
     float FutureValueX = strike * exp(-rate * time);
     float OptionPrice;
 
@@ -69,38 +77,84 @@ float blackScholesPara(float sptprice, float strike, float rate, float volatilit
     return OptionPrice;
 }
 
+
+typedef struct {
+    float *sptprice;
+    float *strike;
+    float *rate;
+    float *volatility;
+    float *otime;
+    char *otype;
+    float *OptionPrice;
+    size_t size;
+    size_t start;
+    size_t end;
+} ThreadData;
+
+
 void blackScholesHelperPara(float *sptprice, float *strike, float *rate,
-                              float *volatility, float *otime, char *otype,
-                              float *OptionPrice, size_t size) {
-    for (int i = 0; i < size; i++) {
+                            float *volatility, float *otime, char *otype,
+                            float *OptionPrice, size_t size, size_t start, size_t end) {
+    for (int i = start; i < end; i++) {
         char type = otype[i] == 'C' ? 0 : 1;
         OptionPrice[i] = blackScholesPara(sptprice[i], strike[i], rate[i],
-                                            volatility[i], otime[i], type,
-                                            0);
+                                          volatility[i], otime[i], type,
+                                          0);
     }
-
+    
 }
 
+void *thread_function(void *arg) {
+    ThreadData *data = (ThreadData *)arg;
+    blackScholesHelperPara(data->sptprice, data->strike, data->rate, 
+                           data->volatility, data->otime, data->otype, 
+                           data->OptionPrice, data->size, data->start, data->end);
+    return NULL;
+
+}   
 
 
 
 /* Alternative Implementation */
 void* impl_parallel(void* args)
 {
-    args_t *parsed_args = (args_t *) args;
 
+args_t *parsed_args = (args_t *)args;
 
-    blackScholesHelperPara(
-            (float *) parsed_args->sptPrice,
-            (float *) parsed_args->strike,
-            (float *) parsed_args->rate,
-            (float *) parsed_args->volatility,
-            (float *) parsed_args->otime,
-            (char *) parsed_args->otype,
-            (float *) parsed_args->output,
-            parsed_args->num_stocks
-    );
+    // Number of threads
+    const int num_threads = 4;
+    pthread_t threads[num_threads];
+    ThreadData threadData[num_threads];
 
+    // Calculate the size of each chunk
+    size_t size = parsed_args->num_stocks;
+    size_t chunkSize = size / num_threads;
 
-  return NULL;
+    // Create and start threads
+    for (int i = 0; i < num_threads; i++) {
+        threadData[i] = (ThreadData){
+            .sptprice = parsed_args->sptPrice,
+            .strike = parsed_args->strike,
+            .rate = parsed_args->rate,
+            .volatility = parsed_args->volatility,
+            .otime = parsed_args->otime,
+            .otype = parsed_args->otype,
+            .OptionPrice = parsed_args->output,
+            .size = size,
+            .start = i * chunkSize,
+            .end = (i + 1) * chunkSize
+        };
+        if (i == num_threads - 1) {
+            threadData[i].end = size; // Ensure the last thread covers all remaining items
+        }
+        pthread_create(&threads[i], NULL, thread_function, &threadData[i]);
+    }
+
+    // Wait for all threads to finish
+    for (int i = 0; i < num_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    return NULL;
+
 }

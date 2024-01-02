@@ -10,6 +10,11 @@
 #define __IMPL_PARA_H_
 
 /* Function declaration */
+
+
+void *thread_function(void *arg);
 void* impl_parallel(void* args);
+
+
 
 #endif //__IMPL_PARA_H_
